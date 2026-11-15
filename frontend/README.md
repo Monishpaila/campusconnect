@@ -5,7 +5,7 @@
 Start the Flask API from the project root in one terminal:
 
 ```powershell
-python app.py
+.\venv\Scripts\python.exe app.py
 ```
 
 Start the React app in another terminal:

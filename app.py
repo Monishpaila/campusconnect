@@ -100,12 +100,15 @@ def create_guest_registration():
     if not isinstance(body, dict) or not body.get("event_id") or not body.get("visitor_id"):
         return api_error("JSON body must include event_id and visitor_id.", 400)
     try:
+        event_id = str(uuid.UUID(str(body["event_id"])))
+    except (ValueError, TypeError, AttributeError):
+        return api_error("Event not found.", 404)
+    try:
         visitor_id = str(uuid.UUID(str(body["visitor_id"])))
     except (ValueError, TypeError, AttributeError):
         return api_error("visitor_id must be a valid UUID.", 400)
-    guest_db = create_client(SUPABASE_URL, SUPABASE_KEY)
-    event_id = str(body["event_id"])
     try:
+        guest_db = create_client(SUPABASE_URL, SUPABASE_KEY)
         event_result = (
             guest_db.table("events")
             .select("id,capacity,status")
@@ -113,9 +116,11 @@ def create_guest_registration():
             .maybe_single()
             .execute()
         )
-        event = event_result.data
+        event = event_result.data if event_result else None
         if not event:
             return api_error("Event not found.", 404)
+        if str(event.get("status") or "").strip().lower() in {"closed", "full", "cancelled", "canceled", "completed"}:
+            return api_error("Registration for this event is closed.", 409)
 
         capacity = event.get("capacity")
         if capacity is not None:
@@ -128,11 +133,11 @@ def create_guest_registration():
             if (count_result.count or 0) >= capacity:
                 return api_error("This event is full.", 409)
 
-        result = guest_db.table("registrations").insert({
+        guest_db.table("registrations").insert({
             "event_id": event_id,
             "guest_id": visitor_id,
         }, returning=ReturnMethod.minimal).execute()
-        return jsonify(result.data[0] if result.data else {}), 201
+        return jsonify({"event_id": event_id, "guest_id": visitor_id}), 201
     except APIError as error:
         if is_unique_violation(error):
             return api_error("This browser is already registered for the event.", 409)
@@ -143,6 +148,9 @@ def create_guest_registration():
             )
         app.logger.exception("Could not create guest registration")
         return api_error("Could not create registration.", 500)
+    except Exception:
+        app.logger.exception("Could not reach Supabase for guest registration")
+        return api_error("Could not reach the Supabase database. Check the Flask server logs.", 502)
 
 
 @app.post("/api/registrations")
@@ -164,6 +172,8 @@ def create_registration():
         event = event_result.data
         if not event:
             return api_error("Event not found.", 404)
+        if str(event.get("status") or "").strip().lower() in {"closed", "full", "cancelled", "canceled", "completed"}:
+            return api_error("Registration for this event is closed.", 409)
         existing = (
             g.db.table("registrations")
             .select("id")
